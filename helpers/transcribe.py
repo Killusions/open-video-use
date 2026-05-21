@@ -1,16 +1,20 @@
-"""Transcribe a video with ElevenLabs Scribe.
+"""Transcribe a video with Whisper via OpenAI-compatible API.
 
-Extracts mono 16kHz audio via ffmpeg, uploads to Scribe with verbatim +
-diarize + audio events + word-level timestamps, writes the full response
-to <edit_dir>/transcripts/<video_stem>.json.
+Extracts mono 16kHz audio via ffmpeg, uploads to the Whisper API with
+word-level timestamps, writes the full response to
+<edit_dir>/transcripts/<video_stem>.json.
 
 Cached: if the output file already exists, the upload is skipped.
+
+Supports any OpenAI-compatible API endpoint (OpenAI, vLLM, faster-whisper-server,
+whisper.cpp, etc.) via --base-url or OPENAI_BASE_URL env var.
 
 Usage:
     python helpers/transcribe.py <video_path>
     python helpers/transcribe.py <video_path> --edit-dir /custom/edit
     python helpers/transcribe.py <video_path> --language en
-    python helpers/transcribe.py <video_path> --num-speakers 2
+    python helpers/transcribe.py <video_path> --model whisper-large-v3-turbo
+    python helpers/transcribe.py <video_path> --base-url http://localhost:8000/v1
 """
 
 from __future__ import annotations
@@ -27,10 +31,16 @@ from pathlib import Path
 import requests
 
 
-SCRIBE_URL = "https://api.elevenlabs.io/v1/speech-to-text"
+DEFAULT_BASE_URL = "https://api.openai.com/v1"
+DEFAULT_MODEL = "whisper-large-v3-turbo"
 
 
-def load_api_key() -> str:
+def load_config() -> tuple[str, str, str]:
+    """Return (api_key, base_url, model) from .env files or environment.
+
+    Priority: .env at repo root > .env in cwd > environment variables.
+    """
+    env_vars: dict[str, str] = {}
     for candidate in [Path(__file__).resolve().parent.parent / ".env", Path(".env")]:
         if candidate.exists():
             for line in candidate.read_text().splitlines():
@@ -38,12 +48,18 @@ def load_api_key() -> str:
                 if not line or line.startswith("#") or "=" not in line:
                     continue
                 k, v = line.split("=", 1)
-                if k.strip() == "ELEVENLABS_API_KEY":
-                    return v.strip().strip('"').strip("'")
-    v = os.environ.get("ELEVENLABS_API_KEY", "")
-    if not v:
-        sys.exit("ELEVENLABS_API_KEY not found in .env or environment")
-    return v
+                k, v = k.strip(), v.strip().strip('"').strip("'")
+                if k and v:
+                    env_vars.setdefault(k, v)
+
+    api_key = env_vars.get("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY", "")
+    if not api_key:
+        sys.exit("OPENAI_API_KEY not found in .env or environment")
+
+    base_url = env_vars.get("OPENAI_BASE_URL") or os.environ.get("OPENAI_BASE_URL", "") or DEFAULT_BASE_URL
+    model = env_vars.get("WHISPER_MODEL") or os.environ.get("WHISPER_MODEL", "") or DEFAULT_MODEL
+
+    return api_key, base_url, model
 
 
 def extract_audio(video_path: Path, dest: Path) -> None:
@@ -55,34 +71,35 @@ def extract_audio(video_path: Path, dest: Path) -> None:
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def call_scribe(
+def call_whisper(
     audio_path: Path,
     api_key: str,
+    base_url: str,
+    model: str,
     language: str | None = None,
-    num_speakers: int | None = None,
 ) -> dict:
-    data: dict[str, str] = {
-        "model_id": "scribe_v1",
-        "diarize": "true",
-        "tag_audio_events": "true",
-        "timestamps_granularity": "word",
-    }
+    url = f"{base_url.rstrip('/')}/audio/transcriptions"
+
+    # Use list-of-tuples for form data to handle array-style params
+    data: list[tuple[str, str]] = [
+        ("model", model),
+        ("response_format", "verbose_json"),
+        ("timestamp_granularities[]", "word"),
+    ]
     if language:
-        data["language_code"] = language
-    if num_speakers:
-        data["num_speakers"] = str(num_speakers)
+        data.append(("language", language))
 
     with open(audio_path, "rb") as f:
         resp = requests.post(
-            SCRIBE_URL,
-            headers={"xi-api-key": api_key},
+            url,
+            headers={"Authorization": f"Bearer {api_key}"},
             files={"file": (audio_path.name, f, "audio/wav")},
             data=data,
             timeout=1800,
         )
 
     if resp.status_code != 200:
-        raise RuntimeError(f"Scribe returned {resp.status_code}: {resp.text[:500]}")
+        raise RuntimeError(f"Whisper API returned {resp.status_code}: {resp.text[:500]}")
 
     return resp.json()
 
@@ -91,8 +108,9 @@ def transcribe_one(
     video: Path,
     edit_dir: Path,
     api_key: str,
+    base_url: str = DEFAULT_BASE_URL,
+    model: str = DEFAULT_MODEL,
     language: str | None = None,
-    num_speakers: int | None = None,
     verbose: bool = True,
 ) -> Path:
     """Transcribe a single video. Returns path to transcript JSON.
@@ -118,7 +136,7 @@ def transcribe_one(
         size_mb = audio.stat().st_size / (1024 * 1024)
         if verbose:
             print(f"  uploading {video.stem}.wav ({size_mb:.1f} MB)", flush=True)
-        payload = call_scribe(audio, api_key, language, num_speakers)
+        payload = call_whisper(audio, api_key, base_url, model, language)
 
     out_path.write_text(json.dumps(payload, indent=2))
     dt = time.time() - t0
@@ -133,7 +151,7 @@ def transcribe_one(
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Transcribe a video with ElevenLabs Scribe")
+    ap = argparse.ArgumentParser(description="Transcribe a video with Whisper via OpenAI-compatible API")
     ap.add_argument("video", type=Path, help="Path to video file")
     ap.add_argument(
         "--edit-dir",
@@ -148,10 +166,16 @@ def main() -> None:
         help="Optional ISO language code (e.g., 'en'). Omit to auto-detect.",
     )
     ap.add_argument(
-        "--num-speakers",
-        type=int,
+        "--model",
+        type=str,
         default=None,
-        help="Optional number of speakers when known. Improves diarization accuracy.",
+        help=f"Whisper model name (default: WHISPER_MODEL env or '{DEFAULT_MODEL}')",
+    )
+    ap.add_argument(
+        "--base-url",
+        type=str,
+        default=None,
+        help=f"OpenAI-compatible API base URL (default: OPENAI_BASE_URL env or '{DEFAULT_BASE_URL}')",
     )
     args = ap.parse_args()
 
@@ -160,14 +184,21 @@ def main() -> None:
         sys.exit(f"video not found: {video}")
 
     edit_dir = (args.edit_dir or (video.parent / "edit")).resolve()
-    api_key = load_api_key()
+    api_key, base_url, model = load_config()
+
+    # CLI args override env/config
+    if args.base_url:
+        base_url = args.base_url
+    if args.model:
+        model = args.model
 
     transcribe_one(
         video=video,
         edit_dir=edit_dir,
         api_key=api_key,
+        base_url=base_url,
+        model=model,
         language=args.language,
-        num_speakers=args.num_speakers,
     )
 
 

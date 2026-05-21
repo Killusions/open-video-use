@@ -1,6 +1,6 @@
-"""Batch-transcribe every video in a directory with 4 parallel workers.
+"""Batch-transcribe every video in a directory with parallel workers.
 
-Walks <videos_dir> for common video extensions, runs ElevenLabs Scribe on
+Walks <videos_dir> for common video extensions, runs Whisper transcription on
 each, writes transcripts to <videos_dir>/edit/transcripts/<name>.json.
 
 Cached per-file: any source that already has a transcript is skipped.
@@ -8,7 +8,8 @@ Cached per-file: any source that already has a transcript is skipped.
 Usage:
     python helpers/transcribe_batch.py <videos_dir>
     python helpers/transcribe_batch.py <videos_dir> --workers 4
-    python helpers/transcribe_batch.py <videos_dir> --num-speakers 2
+    python helpers/transcribe_batch.py <videos_dir> --model whisper-large-v3-turbo
+    python helpers/transcribe_batch.py <videos_dir> --base-url http://localhost:8000/v1
     python helpers/transcribe_batch.py <videos_dir> --edit-dir /custom/edit
 """
 
@@ -20,7 +21,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from transcribe import load_api_key, transcribe_one
+from transcribe import DEFAULT_BASE_URL, DEFAULT_MODEL, load_config, transcribe_one
 
 
 VIDEO_EXTS = {".mp4", ".MP4", ".mov", ".MOV", ".mkv", ".MKV", ".avi", ".AVI", ".m4v"}
@@ -51,10 +52,16 @@ def main() -> None:
         help="Optional ISO language code. Omit to auto-detect per file.",
     )
     ap.add_argument(
-        "--num-speakers",
-        type=int,
+        "--model",
+        type=str,
         default=None,
-        help="Optional number of speakers. Improves diarization when known.",
+        help=f"Whisper model name (default: WHISPER_MODEL env or '{DEFAULT_MODEL}')",
+    )
+    ap.add_argument(
+        "--base-url",
+        type=str,
+        default=None,
+        help=f"OpenAI-compatible API base URL (default: OPENAI_BASE_URL env or '{DEFAULT_BASE_URL}')",
     )
     args = ap.parse_args()
 
@@ -77,9 +84,17 @@ def main() -> None:
         print("nothing to do")
         return
 
-    api_key = load_api_key()
+    api_key, base_url, model = load_config()
+
+    # CLI args override env/config
+    if args.base_url:
+        base_url = args.base_url
+    if args.model:
+        model = args.model
 
     print(f"transcribing {len(pending)} files with {args.workers} parallel workers")
+    print(f"  model: {model}")
+    print(f"  endpoint: {base_url}")
     t0 = time.time()
 
     errors: list[tuple[Path, str]] = []
@@ -90,8 +105,9 @@ def main() -> None:
                 video=v,
                 edit_dir=edit_dir,
                 api_key=api_key,
+                base_url=base_url,
+                model=model,
                 language=args.language,
-                num_speakers=args.num_speakers,
                 verbose=False,
             ): v
             for v in pending
@@ -100,7 +116,7 @@ def main() -> None:
             v = futures[fut]
             try:
                 out = fut.result()
-                print(f"  + {v.stem}  →  {out.name}")
+                print(f"  + {v.stem}  ->  {out.name}")
             except Exception as e:
                 errors.append((v, str(e)))
                 print(f"  x {v.stem}  FAILED: {e}")

@@ -1,9 +1,9 @@
-"""Pack all Scribe transcripts in <edit>/transcripts/ into one readable markdown.
+"""Pack all Whisper transcripts in <edit>/transcripts/ into one readable markdown.
 
 Groups word-level entries into phrase-level lines, breaking on any silence
->= 0.5s OR speaker change. Each phrase gets a [start-end] prefix. This is
-the PRIMARY artifact the editor sub-agent reads to pick cuts — it fits one
-hour of takes in a tenth the tokens of raw Scribe JSON and gives
+>= 0.5s between consecutive words. Each phrase gets a [start-end] prefix.
+This is the PRIMARY artifact the editor sub-agent reads to pick cuts -- it
+fits one hour of takes in a tenth the tokens of raw Whisper JSON and gives
 word-boundary precision from text alone.
 
 Output: <edit>/takes_packed.md
@@ -39,82 +39,51 @@ def group_into_phrases(
     words: list[dict],
     silence_threshold: float = 0.5,
 ) -> list[dict]:
-    """Walk a Scribe word list, break into phrases on silence >= threshold
-    OR speaker change. Returns list of {start, end, text, speaker_id}.
+    """Walk a Whisper word list, break into phrases on silence >= threshold.
+    Returns list of {start, end, text}.
 
-    Scribe `words` entries have types 'word', 'spacing', or 'audio_event'.
-    We keep 'word' and 'audio_event' content in phrase text. 'spacing'
-    entries carry the silence information via their start/end times.
+    Whisper word entries have: {word, start, end}.
+    Gaps are computed directly between consecutive words.
     """
     phrases: list[dict] = []
     current_words: list[dict] = []
     current_start: float | None = None
-    current_speaker: str | None = None
 
     def flush() -> None:
-        nonlocal current_words, current_start, current_speaker
+        nonlocal current_words, current_start
         if not current_words:
             return
-        text_parts: list[str] = []
-        for w in current_words:
-            t = w.get("type", "word")
-            raw = (w.get("text") or "").strip()
-            if not raw:
-                continue
-            if t == "audio_event":
-                if not raw.startswith("("):
-                    raw = f"({raw})"
-            text_parts.append(raw)
+        text_parts = [w.get("word", "").strip() for w in current_words]
+        text_parts = [t for t in text_parts if t]
         if not text_parts:
             current_words = []
             current_start = None
-            current_speaker = None
             return
         text = " ".join(text_parts)
         text = text.replace(" ,", ",").replace(" .", ".").replace(" ?", "?").replace(" !", "!")
-        end_time = current_words[-1].get("end", current_words[-1].get("start", current_start or 0.0))
+        end_time = current_words[-1].get("end", current_start or 0.0)
         phrases.append({
             "start": current_start,
             "end": end_time,
             "text": text,
-            "speaker_id": current_speaker,
         })
         current_words = []
         current_start = None
-        current_speaker = None
 
     prev_end: float | None = None
 
     for w in words:
-        t = w.get("type", "word")
-        if t == "spacing":
-            # spacing entries mark the gaps between words; if the gap is long,
-            # flush the current phrase.
-            start = w.get("start")
-            end = w.get("end")
-            if start is not None and end is not None:
-                gap = end - start
-                if gap >= silence_threshold:
-                    flush()
-            continue
-
-        # 'word' or 'audio_event'
+        word_text = w.get("word", "").strip()
         start = w.get("start")
-        if start is None:
+        if start is None or not word_text:
             continue
-        speaker = w.get("speaker_id")
 
-        # Flush on speaker change
-        if current_speaker is not None and speaker is not None and speaker != current_speaker:
-            flush()
-
-        # Flush on a long gap from the previous kept token
+        # Flush on a long gap from the previous word
         if prev_end is not None and start - prev_end >= silence_threshold:
             flush()
 
         if current_start is None:
             current_start = start
-            current_speaker = speaker
         current_words.append(w)
         prev_end = w.get("end", start)
 
@@ -130,7 +99,7 @@ def pack_one_file(json_path: Path, silence_threshold: float) -> tuple[str, float
     if phrases:
         duration = phrases[-1]["end"] - phrases[0]["start"]
     else:
-        duration = 0.0
+        duration = data.get("duration", 0.0)
     return json_path.stem, duration, phrases
 
 
@@ -138,7 +107,7 @@ def render_markdown(entries: list[tuple[str, float, list[dict]]], silence_thresh
     lines: list[str] = []
     lines.append("# Packed transcripts")
     lines.append("")
-    lines.append(f"Phrase-level, grouped on silences ≥ {silence_threshold:.1f}s or speaker change.")
+    lines.append(f"Phrase-level, grouped on silences >= {silence_threshold:.1f}s.")
     lines.append("Use `[start-end]` ranges to address cuts in the EDL.")
     lines.append("")
     for name, duration, phrases in entries:
@@ -148,22 +117,13 @@ def render_markdown(entries: list[tuple[str, float, list[dict]]], silence_thresh
             lines.append("")
             continue
         for p in phrases:
-            spk = p.get("speaker_id")
-            if spk is not None:
-                # Scribe returns IDs like "speaker_0" — strip the prefix for readability
-                spk_str = str(spk)
-                if spk_str.startswith("speaker_"):
-                    spk_str = spk_str[len("speaker_"):]
-                spk_tag = f" S{spk_str}"
-            else:
-                spk_tag = ""
-            lines.append(f"  [{format_time(p['start'])}-{format_time(p['end'])}]{spk_tag} {p['text']}")
+            lines.append(f"  [{format_time(p['start'])}-{format_time(p['end'])}] {p['text']}")
         lines.append("")
     return "\n".join(lines)
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Pack Scribe transcripts into takes_packed.md")
+    ap = argparse.ArgumentParser(description="Pack Whisper transcripts into takes_packed.md")
     ap.add_argument("--edit-dir", type=Path, required=True, help="Edit directory containing transcripts/")
     ap.add_argument(
         "--silence-threshold",
@@ -197,7 +157,7 @@ def main() -> None:
     total_phrases = sum(len(e[2]) for e in entries)
     total_duration = sum(e[1] for e in entries)
     kb = out_path.stat().st_size / 1024
-    print(f"packed {len(entries)} transcripts → {out_path}")
+    print(f"packed {len(entries)} transcripts -> {out_path}")
     print(f"  {total_phrases} phrases, {format_duration(total_duration)} total runtime")
     print(f"  {kb:.1f} KB")
 
