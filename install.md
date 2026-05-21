@@ -1,6 +1,6 @@
 ---
 name: video-use-install
-description: Install video-use into the current agent (Claude Code, Codex, Hermes, Openclaw, etc.) and wire up ffmpeg + the OpenAI API key so the user can start editing immediately.
+description: Install video-use into the current agent (OpenCode, Codex, Hermes, Openclaw, etc.) and wire up ffmpeg + the OpenAI API key so the user can start editing immediately.
 ---
 
 # video-use install
@@ -71,7 +71,7 @@ If `brew` / `apt` / `pacman` requires a sudo prompt, tell the user the exact com
 
 Figure out which agent you are running under, and register once. A symlink of the whole repo directory is the right shape — helpers/ needs to sit next to SKILL.md.
 
-- **Claude Code** (`~/.claude/` present):
+- **OpenCode** (`~/.claude/` present):
 
     ```bash
     mkdir -p ~/.claude/skills
@@ -87,7 +87,7 @@ Figure out which agent you are running under, and register once. A symlink of th
 
 - **Hermes / Openclaw / another agent with a skills directory**: symlink `~/Developer/video-use` into that agent's skills directory under the name `video-use`. If the agent has no skills directory, add a line to its system prompt / config pointing at `~/Developer/video-use/SKILL.md` (e.g. an `@~/Developer/video-use/SKILL.md` import in a `CLAUDE.md`-equivalent).
 
-If you can't tell which agent you're in, ask the user once: "which agent am I running under — Claude Code, Codex, or something else?" Then pick the right target.
+If you can't tell which agent you're in, ask the user once: "which agent am I running under — OpenCode, Codex, or something else?" Then pick the right target.
 
 ### 5. OpenAI API key
 

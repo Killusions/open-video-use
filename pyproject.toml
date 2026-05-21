@@ -1,7 +1,7 @@
 [project]
 name = "video-use"
 version = "0.1.0"
-description = "Conversation-driven video editor skill for Claude Code"
+description = "Conversation-driven video editor skill for OpenCode"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
 dependencies = [

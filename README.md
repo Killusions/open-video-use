@@ -4,9 +4,9 @@
 
 # video-use
 
-Introducing **video-use** — edit videos with Claude Code. 100% open source.
+Introducing **video-use** — edit videos with OpenCode. 100% open source.
 
-Drop raw footage in a folder, chat with Claude Code, get `final.mp4` back. Works for any content — talking heads, montages, tutorials, travel, interviews — without presets or menus.
+Drop raw footage in a folder, chat with OpenCode, get `final.mp4` back. Works for any content — talking heads, montages, tutorials, travel, interviews — without presets or menus.
 
 ## What it does
 
@@ -20,7 +20,7 @@ Drop raw footage in a folder, chat with Claude Code, get `final.mp4` back. Works
 
 ## Setup prompt
 
-Paste into Claude Code, Codex, Hermes, Openclaw, or any agent with shell access:
+Paste into OpenCode, Codex, Hermes, Openclaw, or any agent with shell access:
 
 ```text
 Set up https://github.com/browser-use/video-use for me.
@@ -52,7 +52,7 @@ If you'd rather do it by hand:
 ```bash
 # 1. Clone and symlink into your agent's skills directory
 git clone https://github.com/browser-use/video-use ~/Developer/video-use
-ln -sfn ~/Developer/video-use ~/.claude/skills/video-use        # Claude Code
+ln -sfn ~/Developer/video-use ~/.claude/skills/video-use        # OpenCode
 # ln -sfn ~/Developer/video-use ~/.codex/skills/video-use       # Codex
 
 # 2. Install deps
