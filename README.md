@@ -8,6 +8,8 @@ Introducing **video-use** — edit videos with OpenCode. 100% open source.
 
 Drop raw footage in a folder, chat with OpenCode, get `final.mp4` back. Works for any content — talking heads, montages, tutorials, travel, interviews — without presets or menus.
 
+> Forked version of https://github.com/browser-use/video-use but without using the ElevenLabs API.
+
 ## What it does
 
 - **Cuts out filler words** (`umm`, `uh`, false starts) and dead space between takes
