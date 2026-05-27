@@ -54,6 +54,7 @@ DEFAULT_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MODEL = "whisper-large-v3-turbo"
 DEFAULT_MAX_SIZE = 4_800_000
 DEFAULT_MAX_DURATION = 300.0  # 5-minute segments limit Whisper timestamp drift
+DEFAULT_OVERLAP = 30.0
 DEFAULT_BITRATE = "32k"
 
 
