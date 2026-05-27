@@ -34,6 +34,27 @@ except Exception:
     def get_preset(name: str) -> str:
         return ""
 
+
+def _detect_hw_encoder() -> tuple[str, list[str]]:
+    """Detect hardware encoder. Returns (encoder_name, extra_args).
+
+    Prefers VideoToolbox on macOS Apple Silicon, falls back to libx264.
+    VideoToolbox doesn't support CRF, so uses -b:v instead.
+    """
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-encoders"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if "h264_videotoolbox" in result.stdout:
+            return "h264_videotoolbox", ["-b:v", "6000k"]
+    except Exception:
+        pass
+    return "libx264", []
+
+
+_HW_ENC, _HW_ENC_EXTRA = _detect_hw_encoder()
+
     def auto_grade_for_clip(video, start=0.0, duration=None, verbose=False):  # type: ignore
         return "eq=contrast=1.03:saturation=0.98", {}
 
@@ -190,10 +211,19 @@ def extract_segment(
 
     if draft:
         preset, crf = "ultrafast", "28"
+        enc, enc_extra = "libx264", []  # draft always uses software for speed
     elif preview:
         preset, crf = "medium", "22"
+        enc, enc_extra = "libx264", []
     else:
         preset, crf = "fast", "20"
+        enc, enc_extra = _HW_ENC, list(_HW_ENC_EXTRA)
+
+    enc_args = ["-c:v", enc]
+    if enc_extra:
+        enc_args += enc_extra
+    else:
+        enc_args += ["-preset", preset, "-crf", crf]
 
     cmd = [
         "ffmpeg", "-y",
@@ -202,7 +232,7 @@ def extract_segment(
         "-t", f"{duration:.3f}",
         "-vf", vf,
         "-af", af,
-        "-c:v", "libx264", "-preset", preset, "-crf", crf,
+        *enc_args,
         "-pix_fmt", "yuv420p", "-r", "24",
         "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
         "-movflags", "+faststart",
@@ -552,13 +582,19 @@ def build_final_composite(
 
     filter_complex = ";".join(filter_parts)
 
+    enc_args = ["-c:v", _HW_ENC]
+    if _HW_ENC_EXTRA:
+        enc_args += _HW_ENC_EXTRA
+    else:
+        enc_args += ["-preset", "fast", "-crf", "18"]
+
     cmd = [
         "ffmpeg", "-y",
         *inputs,
         "-filter_complex", filter_complex,
         "-map", out_label,
         "-map", "0:a",
-        "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+        *enc_args,
         "-pix_fmt", "yuv420p",
         "-c:a", "copy",
         "-movflags", "+faststart",
