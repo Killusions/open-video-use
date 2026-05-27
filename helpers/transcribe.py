@@ -51,7 +51,7 @@ import requests
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MODEL = "whisper-large-v3-turbo"
 DEFAULT_MAX_SIZE = 4_800_000
-DEFAULT_OVERLAP = 30.0
+DEFAULT_MAX_DURATION = 300.0  # 5-minute segments limit Whisper timestamp drift
 DEFAULT_BITRATE = "32k"
 
 
@@ -100,8 +100,8 @@ def load_split_config() -> tuple[int, float | None, float, str]:
     """Return (max_size, max_duration, overlap, bitrate) from .env or environment."""
     env_vars = _load_env_vars()
     max_size = int(_env("WHISPER_MAX_SIZE", str(DEFAULT_MAX_SIZE), env_vars))
-    max_dur_raw = _env("WHISPER_MAX_DURATION", "", env_vars)
-    max_duration = float(max_dur_raw) if max_dur_raw else None
+    max_dur_raw = _env("WHISPER_MAX_DURATION", str(DEFAULT_MAX_DURATION), env_vars)
+    max_duration = float(max_dur_raw) if max_dur_raw else DEFAULT_MAX_DURATION
     overlap = float(_env("WHISPER_OVERLAP", str(DEFAULT_OVERLAP), env_vars))
     bitrate = _env("WHISPER_BITRATE", DEFAULT_BITRATE, env_vars)
     return max_size, max_duration, overlap, bitrate
