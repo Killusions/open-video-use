@@ -187,21 +187,86 @@ def _split_audio(
     return segments
 
 
+def _compute_drift_factors(
+    results: list[tuple[dict, float]],
+) -> list[float]:
+    """Compute per-segment linear time-stretch factors using overlap text matching.
+
+    Whisper segment-level timestamps drift linearly (~1s per 100s of audio).
+    For each consecutive pair we find matching text in the overlap region.
+    Segment i+1 is near its start so its timestamps are accurate; segment i
+    is near its end where drift is worst.  The ratio gives us the correction
+    factor for segment i: corrected_local_t = local_t * factor.
+    """
+    n = len(results)
+    factors = [1.0] * n
+
+    for i in range(n - 1):
+        payload_i, start_i = results[i]
+        payload_j, start_j = results[i + 1]
+
+        segs_i = payload_i.get("segments", [])
+        segs_j = payload_j.get("segments", [])
+        if not segs_i or not segs_j:
+            continue
+
+        # Try to match text from the end of seg_i with the start of seg_j
+        # seg_j is fresh so its early timestamps are accurate
+        best_whisper_t = None
+        best_actual_t = None
+        for si in reversed(segs_i):
+            si_text = si.get("text", "").strip().lower()
+            if len(si_text) < 10:
+                continue
+            needle = si_text[:30]
+            for sj in segs_j:
+                sj_text = sj.get("text", "").strip().lower()
+                if needle in sj_text or sj_text[:30] in si_text:
+                    # Match: seg_j says this content is at local time sj["start"],
+                    # which corresponds to absolute time (start_j + sj["start"]).
+                    # seg_i says the same content is at local time si["start"].
+                    # The true local time in seg_i's frame is:
+                    #   start_j + sj["start"] - start_i
+                    best_whisper_t = si["start"]
+                    best_actual_t = start_j + sj["start"] - start_i
+                    break
+            if best_whisper_t is not None:
+                break
+
+        if best_whisper_t and best_whisper_t > 0:
+            factors[i] = best_actual_t / best_whisper_t
+
+    return factors
+
+
+def _correct_time(local_t: float, factor: float, seg_start: float) -> float:
+    """Apply linear drift correction and offset to a local timestamp."""
+    return round(local_t * factor + seg_start, 3)
+
+
 def _merge_transcripts(
     results: list[tuple[dict, float]],
     chunk_dur: float,
     overlap: float,
     total_dur: float,
 ) -> dict:
-    """Merge overlapping transcript segments into a single unified transcript."""
+    """Merge overlapping transcript segments into a single unified transcript.
+
+    Uses overlap regions to measure and correct Whisper timestamp drift
+    (which accumulates linearly within each segment).
+    """
     if len(results) == 1:
         return results[0][0]
+
+    factors = _compute_drift_factors(results)
 
     merged_words: list[dict] = []
     merged_segments: list[dict] = []
     n = len(results)
 
     for i, (payload, seg_start) in enumerate(results):
+        factor = factors[i]
+
         # Local time bounds: keep the middle portion, discard overlap edges
         left_cut = 0.0 if i == 0 else overlap / 2
         right_cut = float("inf") if i == n - 1 else chunk_dur - overlap / 2
@@ -213,8 +278,8 @@ def _merge_transcripts(
                     continue
                 merged_words.append({
                     **w,
-                    "start": round(t + seg_start, 3),
-                    "end": round(w.get("end", t) + seg_start, 3),
+                    "start": _correct_time(t, factor, seg_start),
+                    "end": _correct_time(w.get("end", t), factor, seg_start),
                 })
 
         if payload.get("segments"):
@@ -224,8 +289,8 @@ def _merge_transcripts(
                     continue
                 merged_segments.append({
                     **s,
-                    "start": round(s["start"] + seg_start, 3),
-                    "end": round(s["end"] + seg_start, 3),
+                    "start": _correct_time(s["start"], factor, seg_start),
+                    "end": _correct_time(s["end"], factor, seg_start),
                 })
 
     # Re-index segment IDs
