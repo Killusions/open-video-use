@@ -212,8 +212,8 @@ def _compute_drift_factors(
             continue
 
         # Overlap region in seg_i local time: from (start_j - start_i) onward
-        # But Whisper timestamps are drifted, so widen the search window
-        overlap_start_local_i = start_j - start_i - overlap * 0.5
+        # Widen the search since Whisper timestamps are drifted
+        overlap_start_local_i = start_j - start_i - overlap
 
         # Filter to overlap regions only
         overlap_segs_i = [s for s in segs_i if s.get("start", 0) >= overlap_start_local_i]
@@ -222,7 +222,7 @@ def _compute_drift_factors(
         if not overlap_segs_i or not overlap_segs_j:
             continue
 
-        # Collect multiple matches to pick the most reliable one
+        # Collect multiple matches
         matches: list[tuple[float, float]] = []  # (whisper_local_i, actual_local_i)
 
         for sj in overlap_segs_j:
@@ -268,45 +268,70 @@ def _merge_transcripts(
     """Merge overlapping transcript segments into a single unified transcript.
 
     Uses overlap regions to measure and correct Whisper timestamp drift
-    (which accumulates linearly within each segment).
+    (which accumulates linearly within each segment).  Deduplication is done
+    on corrected absolute timestamps so drift doesn't create content gaps.
     """
     if len(results) == 1:
         return results[0][0]
 
     factors = _compute_drift_factors(results, overlap)
 
-    merged_words: list[dict] = []
-    merged_segments: list[dict] = []
-    n = len(results)
+    # First pass: correct all timestamps and tag with source segment index
+    all_segments: list[tuple[int, dict]] = []  # (source_idx, corrected_segment)
+    all_words: list[tuple[int, dict]] = []
 
     for i, (payload, seg_start) in enumerate(results):
         factor = factors[i]
 
-        # Local time bounds: keep the middle portion, discard overlap edges
-        left_cut = 0.0 if i == 0 else overlap / 2
-        right_cut = float("inf") if i == n - 1 else chunk_dur - overlap / 2
-
         if payload.get("words"):
             for w in payload["words"]:
-                t = w.get("start", 0.0)
-                if t < left_cut or t >= right_cut:
-                    continue
-                merged_words.append({
+                cw = {
                     **w,
-                    "start": _correct_time(t, factor, seg_start),
-                    "end": _correct_time(w.get("end", t), factor, seg_start),
-                })
+                    "start": _correct_time(w.get("start", 0.0), factor, seg_start),
+                    "end": _correct_time(w.get("end", 0.0), factor, seg_start),
+                }
+                all_words.append((i, cw))
 
         if payload.get("segments"):
             for s in payload["segments"]:
-                t = s.get("start", 0.0)
-                if t < left_cut or t >= right_cut:
-                    continue
-                merged_segments.append({
+                cs = {
                     **s,
                     "start": _correct_time(s["start"], factor, seg_start),
                     "end": _correct_time(s["end"], factor, seg_start),
-                })
+                }
+                all_segments.append((i, cs))
+
+    # Deduplicate overlapping regions: for each overlap between segments i and
+    # i+1, compute the midpoint in absolute time and keep seg i's entries below
+    # the midpoint and seg i+1's entries at or above.
+    n = len(results)
+    # Compute split points (absolute time) for each overlap
+    split_points: list[float] = []
+    for i in range(n - 1):
+        _, start_i = results[i]
+        _, start_j = results[i + 1]
+        # Midpoint of the overlap in absolute time
+        mid = (start_j + start_i + chunk_dur * factors[i]) / 2
+        split_points.append(mid)
+
+    def _keep(source_idx: int, abs_time: float) -> bool:
+        # Check against split points to decide which source to keep
+        if source_idx > 0:
+            # Must be at or after the split point with the previous segment
+            if abs_time < split_points[source_idx - 1]:
+                return False
+        if source_idx < n - 1:
+            # Must be before the split point with the next segment
+            if abs_time >= split_points[source_idx]:
+                return False
+        return True
+
+    merged_segments = [seg for src, seg in all_segments if _keep(src, seg["start"])]
+    merged_words = [w for src, w in all_words if _keep(src, w["start"])]
+
+    # Sort by start time (should already be mostly sorted)
+    merged_segments.sort(key=lambda s: s["start"])
+    merged_words.sort(key=lambda w: w["start"])
 
     # Re-index segment IDs
     for idx, s in enumerate(merged_segments):
@@ -321,7 +346,6 @@ def _merge_transcripts(
         text = " ".join(r[0].get("text", "") for r in results)
 
     merged: dict = {"text": text, "duration": total_dur}
-    # Preserve top-level metadata from first segment
     first = results[0][0]
     for key in ("task", "language"):
         if key in first:
