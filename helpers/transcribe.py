@@ -5,9 +5,11 @@ uploads to the Whisper API with word-level timestamps, writes the full response
 to <edit_dir>/transcripts/<video_stem>.json.
 
 Auto-splitting: if the extracted mp3 exceeds WHISPER_MAX_SIZE (default ~4.6 MB)
-or WHISPER_MAX_DURATION, the audio is automatically split into overlapping
-segments, each transcribed separately, then merged into a single unified
-transcript with correct absolute timestamps.
+or WHISPER_MAX_DURATION (default 300s), the audio is automatically split into
+overlapping segments, each transcribed separately, then merged into a single
+unified transcript with drift-corrected absolute timestamps.  The overlap
+regions are used to measure and compensate Whisper's linear timestamp drift
+(~1s per 100s of audio with segment-level timestamps).
 
 Cached: if the output file already exists, the upload is skipped.
 
@@ -19,7 +21,7 @@ Environment variables / .env keys:
     OPENAI_BASE_URL      — API base URL (default: https://api.openai.com/v1)
     WHISPER_MODEL        — model name (default: whisper-large-v3-turbo)
     WHISPER_MAX_SIZE     — max upload size in bytes (default: 4800000, ~4.6 MB)
-    WHISPER_MAX_DURATION — max segment duration in seconds (default: none)
+    WHISPER_MAX_DURATION — max segment duration in seconds (default: 300)
     WHISPER_OVERLAP      — overlap between segments in seconds (default: 30)
     WHISPER_BITRATE      — mp3 bitrate for extraction (default: 32k)
 
