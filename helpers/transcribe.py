@@ -189,14 +189,15 @@ def _split_audio(
 
 def _compute_drift_factors(
     results: list[tuple[dict, float]],
+    overlap: float,
 ) -> list[float]:
     """Compute per-segment linear time-stretch factors using overlap text matching.
 
     Whisper segment-level timestamps drift linearly (~1s per 100s of audio).
-    For each consecutive pair we find matching text in the overlap region.
-    Segment i+1 is near its start so its timestamps are accurate; segment i
-    is near its end where drift is worst.  The ratio gives us the correction
-    factor for segment i: corrected_local_t = local_t * factor.
+    For each consecutive pair we find matching text strictly within the overlap
+    region.  Segment i+1 is near its start so its timestamps are accurate;
+    segment i is near its end where drift is worst.  The ratio gives us the
+    correction factor for segment i: corrected_local_t = local_t * factor.
     """
     n = len(results)
     factors = [1.0] * n
@@ -210,31 +211,45 @@ def _compute_drift_factors(
         if not segs_i or not segs_j:
             continue
 
-        # Try to match text from the end of seg_i with the start of seg_j
-        # seg_j is fresh so its early timestamps are accurate
-        best_whisper_t = None
-        best_actual_t = None
-        for si in reversed(segs_i):
-            si_text = si.get("text", "").strip().lower()
-            if len(si_text) < 10:
-                continue
-            needle = si_text[:30]
-            for sj in segs_j:
-                sj_text = sj.get("text", "").strip().lower()
-                if needle in sj_text or sj_text[:30] in si_text:
-                    # Match: seg_j says this content is at local time sj["start"],
-                    # which corresponds to absolute time (start_j + sj["start"]).
-                    # seg_i says the same content is at local time si["start"].
-                    # The true local time in seg_i's frame is:
-                    #   start_j + sj["start"] - start_i
-                    best_whisper_t = si["start"]
-                    best_actual_t = start_j + sj["start"] - start_i
-                    break
-            if best_whisper_t is not None:
-                break
+        # Overlap region in seg_i local time: from (start_j - start_i) onward
+        # But Whisper timestamps are drifted, so widen the search window
+        overlap_start_local_i = start_j - start_i - overlap * 0.5
 
-        if best_whisper_t and best_whisper_t > 0:
-            factors[i] = best_actual_t / best_whisper_t
+        # Filter to overlap regions only
+        overlap_segs_i = [s for s in segs_i if s.get("start", 0) >= overlap_start_local_i]
+        overlap_segs_j = [s for s in segs_j if s.get("start", 0) <= overlap * 1.5]
+
+        if not overlap_segs_i or not overlap_segs_j:
+            continue
+
+        # Collect multiple matches to pick the most reliable one
+        matches: list[tuple[float, float]] = []  # (whisper_local_i, actual_local_i)
+
+        for sj in overlap_segs_j:
+            sj_text = sj.get("text", "").strip().lower()
+            if len(sj_text) < 15:
+                continue
+            needle = sj_text[:25]
+            for si in overlap_segs_i:
+                si_text = si.get("text", "").strip().lower()
+                if needle in si_text:
+                    actual_local_i = start_j + sj["start"] - start_i
+                    matches.append((si["start"], actual_local_i))
+                    break
+
+        if not matches:
+            continue
+
+        # Use the median match for robustness
+        matches.sort(key=lambda m: m[0])
+        mid = len(matches) // 2
+        whisper_t, actual_t = matches[mid]
+
+        if whisper_t > 0:
+            factor = actual_t / whisper_t
+            # Sanity: drift should be small (0.97-1.03 for typical Whisper drift)
+            if 0.95 <= factor <= 1.05:
+                factors[i] = factor
 
     return factors
 
@@ -258,7 +273,7 @@ def _merge_transcripts(
     if len(results) == 1:
         return results[0][0]
 
-    factors = _compute_drift_factors(results)
+    factors = _compute_drift_factors(results, overlap)
 
     merged_words: list[dict] = []
     merged_segments: list[dict] = []
